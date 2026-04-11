@@ -1,0 +1,83 @@
+/* Import the Poppins font from Google */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+
+* {
+  font-family: 'Poppins', sans-serif !important;
+}
+
+:root {
+  /* A softer, modern "Slate" light mode palette */
+  --bg-main: #f4f7f8; 
+  --bg-card: #ffffff;
+  --text-main: #1e293b; /* Deeper, richer text color */
+  --text-muted: #64748b;
+  --border: #e2e8f0;
+  --border-light: #f8fafc;
+  
+  --sidebar-bg: #0f172a; /* Midnight Slate instead of basic Navy */
+  --sidebar-border: #1e293b;
+}
+
+body.dark-mode {
+  /* A sleek, deep "Midnight" dark mode palette */
+  --bg-main: #0b1120;
+  --bg-card: #1e293b;
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  --border: #334155;
+  --border-light: #1e293b;
+}
+
+body {
+  /* The subtle background gradient */
+  background: linear-gradient(135deg, var(--bg-main) 0%, var(--border-light) 100%);
+  background-attachment: fixed;
+  color: var(--text-main);
+  margin: 0;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* 🪄 MAGIC UPGRADE 1: Custom Mac-Style Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* 🪄 MAGIC UPGRADE 2: Universal Button Hover Effects */
+button {
+  transition: all 0.2s ease-in-out !important;
+}
+button:hover {
+  transform: translateY(-2px); /* Lifts the button up slightly */
+  filter: brightness(1.1); /* Makes it slightly brighter */
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15); /* Adds a soft shadow drop */
+}
+button:active {
+  transform: translateY(0px); /* Pushes it back down when clicked */
+}
+
+/* 🪄 MAGIC UPGRADE 3: Interactive Table Rows */
+tbody tr {
+  transition: background-color 0.2s ease;
+}
+tbody tr:hover {
+  background-color: rgba(99, 102, 241, 0.05); /* Very subtle tint on hover */
+}
+
+/* 🪄 MAGIC UPGRADE 4: Premium Gradient Text */
+.gradient-text {
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  display: inline-block;
+}

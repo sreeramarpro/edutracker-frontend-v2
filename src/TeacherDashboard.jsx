@@ -1,0 +1,590 @@
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { users, results, assessments } from './mockData';
+import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import Sidebar from './Sidebar';
+import toast from 'react-hot-toast'; 
+import { motion, AnimatePresence } from 'framer-motion';
+import { Plus, Download, FileText, X, UserPlus, Bell, Check } from 'lucide-react';
+
+function TeacherDashboard() {
+  const [liveStudents, setLiveStudents] = useState([]);
+  const [teacher, setTeacher] = useState(null);
+  const [studentStats, setStudentStats] = useState([]);
+  const [classAverage, setClassAverage] = useState(0);
+  const [atRiskCount, setAtRiskCount] = useState(0);
+  
+  const [isGradeModalOpen, setIsGradeModalOpen] = useState(false);
+  const [isAssessmentModalOpen, setIsAssessmentModalOpen] = useState(false);
+  const [isAddStudentModalOpen, setIsAddStudentModalOpen] = useState(false);
+  const [isLobbyOpen, setIsLobbyOpen] = useState(false);
+  
+  // Start empty, we will fill it from MySQL!
+  const [assessmentList, setAssessmentList] = useState([]);
+
+  // Fetch the live assessments from Spring Boot
+  const fetchAssessments = async () => {
+    try {
+      const response = await fetch('http://localhost:8081/api/assessments');
+      const data = await response.json();
+      setAssessmentList(data);
+    } catch (error) {
+      console.error("Could not fetch assessments:", error);
+    }
+  };
+  const [pendingRequests, setPendingRequests] = useState([]);
+  
+  const [newGrade, setNewGrade] = useState({ studentId: '', assessmentId: '', score: '', feedback: '' });
+  const [newAssessment, setNewAssessment] = useState({ title: '', subject: '', maxScore: '100', date: new Date().toISOString().split('T')[0] });
+  const [newStudent, setNewStudent] = useState({ name: '', email: '' });
+  
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortConfig, setSortConfig] = useState({ key: 'name', direction: 'asc' });
+  const [selectedStudentId, setSelectedStudentId] = useState(null);
+  const [activeTab, setActiveTab] = useState('dashboard');
+  
+  const navigate = useNavigate();
+
+  // --- 🪄 UPGRADED API CALLS ---
+  const fetchLiveStudents = async (tId) => {
+    const idToUse = tId || teacher?.id;
+    if (!idToUse) return;
+
+    try {
+      const response = await fetch(`http://localhost:8081/api/requests/approved/${idToUse}`);
+      const data = await response.json();
+      
+      // Map the relational data into a flat format for our charts to read
+      const roster = data.map(req => ({
+        id: req.studentId || req.id, // Fallback for seeded students without real accounts
+        name: req.studentName,
+        email: req.studentEmail,
+        role: 'student'
+      }));
+      
+      setLiveStudents(roster);
+    } catch (error) {
+      console.error("Database connection failed:", error);
+    }
+  };
+
+  const fetchPendingRequests = async (teacherId) => {
+    try {
+      const response = await fetch(`http://localhost:8081/api/requests/pending/${teacherId}`);
+      const data = await response.json();
+      setPendingRequests(data);
+    } catch (error) {
+      console.error("Could not fetch lobby:", error);
+    }
+  };
+
+  const handleApproveRequest = async (requestId) => {
+    try {
+      const response = await fetch(`http://localhost:8081/api/requests/${requestId}/approve`, { method: 'PUT' });
+      if (response.ok) {
+        toast.success('Student approved!');
+        fetchPendingRequests(teacher.id);
+        fetchLiveStudents(teacher.id); // Instantly updates the roster!
+      }
+    } catch (error) {
+      toast.error('Approval failed.');
+    }
+  };
+
+  const seedDatabase = async () => {
+    const studentsOnly = users.filter(u => u.role === 'student');
+    let addedCount = 0;
+    for (const student of studentsOnly) {
+      const alreadyExists = liveStudents.some(liveStudent => liveStudent.email === student.email);
+      if (!alreadyExists) {
+        await fetch('http://localhost:8081/api/requests/direct-add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            studentName: student.name, 
+            studentEmail: student.email, 
+            teacherId: teacher.id,
+            studentId: Math.floor(Math.random() * 10000) // Fake ID for mock data
+          })
+        });
+        addedCount++;
+      }
+    }
+    if (addedCount > 0) {
+      toast.success(`🌱 Successfully added ${addedCount} new students!`);
+      fetchLiveStudents(teacher.id);
+    } else {
+      toast('✨ Database is already fully seeded!', { icon: '🛑' });
+    }
+  };
+
+  const handleAddStudent = async (e) => {
+    e.preventDefault();
+    if (liveStudents.some(s => s.email === newStudent.email)) {
+      toast.error('A student with this email is already in your class!');
+      return;
+    }
+    try {
+      const response = await fetch('http://localhost:8081/api/requests/direct-add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          studentName: newStudent.name, 
+          studentEmail: newStudent.email, 
+          teacherId: teacher.id,
+          studentId: Math.floor(Math.random() * 10000) // Fake ID since they didn't sign up
+        })
+      });
+      if (response.ok) {
+        toast.success(`${newStudent.name} added to roster!`);
+        setIsAddStudentModalOpen(false);
+        setNewStudent({ name: '', email: '' });
+        fetchLiveStudents(teacher.id); 
+      } else {
+        toast.error('Failed to save student.');
+      }
+    } catch (error) {
+      toast.error('Cannot connect to server.');
+    }
+  };
+
+  // --- STATS & LIFECYCLES ---
+  const calculateStats = () => {
+    const allStudents = liveStudents;
+    let totalClassPercentage = 0;
+    let riskCount = 0;
+    
+    const stats = allStudents.map(student => {
+      const studentGrades = results.filter(r => r.studentId === student.id);
+      let totalPercentage = 0;
+      studentGrades.forEach(grade => {
+        const testInfo = assessmentList.find(a => a.id === grade.assessmentId);
+        if (testInfo) {
+          totalPercentage += (grade.score / testInfo.maxScore) * 100;
+        }
+      });
+      const average = studentGrades.length > 0 ? (totalPercentage / studentGrades.length).toFixed(1) : 0;
+      const numAvg = parseFloat(average);
+      totalClassPercentage += numAvg;
+      if (numAvg < 70) riskCount++;
+      return { id: student.id, name: student.name, email: student.email, average: numAvg };
+    });
+    setStudentStats(stats);
+    if (stats.length > 0) setClassAverage((totalClassPercentage / stats.length).toFixed(1));
+    setAtRiskCount(riskCount);
+  };
+
+  useEffect(() => {
+    const storedUser = localStorage.getItem('currentUser');
+    if (!storedUser) { navigate('/'); return; }
+    const parsedUser = JSON.parse(storedUser);
+    if (parsedUser.role !== 'teacher') { navigate('/student'); return; }
+    setTeacher(parsedUser);
+    
+    // 🪄 We pass the ID explicitly on first load!
+    fetchLiveStudents(parsedUser.id);
+    fetchPendingRequests(parsedUser.id);
+    fetchAssessments();
+  }, [navigate]); 
+
+  useEffect(() => {
+    if (liveStudents.length > 0) {
+      calculateStats();
+    } else {
+      // If the roster gets emptied out, clear the stats to avoid old data lingering
+      setStudentStats([]);
+      setClassAverage(0);
+      setAtRiskCount(0);
+    }
+  }, [liveStudents, assessmentList]);
+
+  const handleLogout = () => { 
+    localStorage.removeItem('currentUser'); 
+    toast.success('Logged out successfully!'); 
+    navigate('/'); 
+  };
+
+  // --- COMPONENT FUNCTIONS ---
+  const handleAddAssessment = async (e) => {
+    e.preventDefault();
+    
+    try {
+      const response = await fetch('http://localhost:8081/api/assessments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newAssessment.title,
+          subject: newAssessment.subject,
+          maxScore: Number(newAssessment.maxScore),
+          date: newAssessment.date
+        })
+      });
+
+      if (response.ok) {
+        toast.success('New assignment created!');
+        setIsAssessmentModalOpen(false);
+        // Clear the form
+        setNewAssessment({ title: '', subject: '', maxScore: '100', date: new Date().toISOString().split('T')[0] });
+        // Instantly refresh the table!
+        fetchAssessments(); 
+      } else {
+        toast.error('Failed to create assignment.');
+      }
+    } catch (error) {
+      toast.error('Cannot connect to server.');
+    }
+  };
+
+  const handleAddGrade = (e) => {
+    e.preventDefault();
+    results.push({ id: Math.floor(Math.random() * 10000), studentId: Number(newGrade.studentId), assessmentId: Number(newGrade.assessmentId), score: Number(newGrade.score), feedback: newGrade.feedback || "Reviewed offline." });
+    calculateStats();
+    setIsGradeModalOpen(false);
+    setNewGrade({ studentId: '', assessmentId: '', score: '', feedback: '' });
+    toast.success('Grade & remark saved successfully!'); 
+  };
+
+  const generateReport = () => {
+    const headers = ['Student Name,Overall Average (%),Status'];
+    const rows = studentStats.map(stat => `${stat.name},${stat.average},${stat.average >= 70 ? 'On Track' : 'Needs Support'}`);
+    const csvContent = "data:text/csv;charset=utf-8," + headers.concat(rows).join("\n");
+    const link = document.createElement("a");
+    link.setAttribute("href", encodeURI(csvContent));
+    link.setAttribute("download", "class_performance_report.csv");
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    toast.success('Report downloaded!');
+  };
+
+  const handleSort = (key) => {
+    let direction = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
+    setSortConfig({ key, direction });
+  };
+
+  const processedStudents = [...studentStats].filter(student => student.name.toLowerCase().includes(searchTerm.toLowerCase())).sort((a, b) => {
+    if (a[sortConfig.key] < b[sortConfig.key]) return sortConfig.direction === 'asc' ? -1 : 1;
+    if (a[sortConfig.key] > b[sortConfig.key]) return sortConfig.direction === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  let selectedStudent = null;
+  let selectedStudentGrades = [];
+  if (selectedStudentId) {
+    selectedStudent = liveStudents.find(u => u.id === selectedStudentId);
+    selectedStudentGrades = results.filter(r => r.studentId === selectedStudentId).map(result => {
+      const testInfo = assessmentList.find(a => a.id === result.assessmentId);
+      return { 
+        testName: testInfo ? testInfo.title : 'Unknown', 
+        percentage: testInfo ? Math.round((result.score / testInfo.maxScore) * 100) : 0, 
+        score: result.score, 
+        maxScore: testInfo ? testInfo.maxScore : 100, 
+        feedback: result.feedback 
+      };
+    });
+  }
+
+  if (!teacher) return null;
+
+  const PageWrapper = ({ children, keyName }) => (
+    <motion.div key={keyName} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -15 }} transition={{ duration: 0.3 }}>
+      {children}
+    </motion.div>
+  );
+
+  // --- RENDER SECTIONS ---
+  const renderDashboard = () => (
+    <PageWrapper keyName="dashboard">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
+        <div>
+          <h1 className="gradient-text" style={{ margin: 0 }}>Educator Portal</h1>
+          <p style={{ margin: 0, color: 'var(--text-muted)' }}>Logged in as {teacher.name}</p>
+        </div>
+        <div style={{ display: 'flex', gap: '10px' }}>
+          
+          <button onClick={() => setIsLobbyOpen(true)} style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', width: '42px', height: '42px', backgroundColor: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: '6px', cursor: 'pointer' }}>
+            <Bell size={20} color="var(--text-main)" />
+            {pendingRequests.length > 0 && (
+              <span style={{ position: 'absolute', top: '-5px', right: '-5px', backgroundColor: '#f5222d', color: 'white', fontSize: '10px', fontWeight: 'bold', padding: '2px 6px', borderRadius: '10px' }}>
+                {pendingRequests.length}
+              </span>
+            )}
+          </button>
+
+          <button onClick={seedDatabase} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', backgroundColor: '#52c41a', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+            🌱 Seed Database
+          </button>
+
+          <button onClick={() => setIsAddStudentModalOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', backgroundColor: '#14b8a6', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+            <UserPlus size={18} /> Add Student
+          </button>
+          
+          <button onClick={() => setIsGradeModalOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', backgroundColor: '#6366f1', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+            <Plus size={18} /> Grade Student
+          </button>
+        </div>
+      </div>
+      
+      <div style={{ display: 'flex', gap: '20px', marginBottom: '30px' }}>
+        <div style={{ flex: 1, backgroundColor: 'var(--bg-card)', padding: '20px', borderRadius: '10px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)' }}><h4 style={{ margin: '0 0 10px 0', color: 'var(--text-muted)' }}>Total Students</h4><h2 style={{ margin: 0, fontSize: '36px', color: '#6366f1' }}>{studentStats.length}</h2></div>
+        <div style={{ flex: 1, backgroundColor: 'var(--bg-card)', padding: '20px', borderRadius: '10px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)' }}><h4 style={{ margin: '0 0 10px 0', color: 'var(--text-muted)' }}>Class Average</h4><h2 style={{ margin: 0, fontSize: '36px', color: classAverage >= 70 ? '#52c41a' : '#faad14' }}>{classAverage}%</h2></div>
+        <div style={{ flex: 1, backgroundColor: 'var(--bg-card)', padding: '20px', borderRadius: '10px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)' }}><h4 style={{ margin: '0 0 10px 0', color: 'var(--text-muted)' }}>Students at Risk</h4><h2 style={{ margin: 0, fontSize: '36px', color: atRiskCount > 0 ? '#f5222d' : '#52c41a' }}>{atRiskCount}</h2></div>
+      </div>
+      
+      <div style={{ backgroundColor: 'var(--bg-card)', padding: '20px', borderRadius: '10px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)', marginBottom: '30px' }}>
+        <h3 style={{ marginTop: 0, color: 'var(--text-main)' }}>Performance Overview</h3>
+        <div style={{ width: '100%', height: 300 }}>
+          <ResponsiveContainer>
+            <BarChart data={studentStats}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+              <XAxis dataKey="name" tick={{ fill: 'var(--text-muted)' }} />
+              <YAxis domain={[0, 100]} tick={{ fill: 'var(--text-muted)' }} />
+              <Tooltip cursor={{ fill: 'var(--bg-main)' }} contentStyle={{ backgroundColor: 'var(--bg-card)', color: 'var(--text-main)', borderRadius: '8px', border: '1px solid var(--border)' }} />
+              <Bar dataKey="average" fill="#6366f1" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      
+      <div style={{ backgroundColor: 'var(--bg-card)', padding: '20px', borderRadius: '10px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h3 style={{ margin: 0, color: 'var(--text-main)' }}>Student Roster</h3>
+          <input type="text" placeholder="Search students..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)', width: '250px' }} />
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid var(--border-light)' }}>
+              <th onClick={() => handleSort('name')} style={{ padding: '16px', textAlign: 'left', cursor: 'pointer', color: 'var(--text-muted)' }}>Student Name {sortConfig.key === 'name' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}</th>
+              <th onClick={() => handleSort('average')} style={{ padding: '16px', textAlign: 'left', cursor: 'pointer', color: 'var(--text-muted)' }}>Overall Average {sortConfig.key === 'average' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}</th>
+              <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {processedStudents.map((stat, index) => (
+              <tr key={index} onClick={() => setSelectedStudentId(stat.id)} style={{ borderBottom: '1px solid var(--border-light)', cursor: 'pointer' }}>
+                <td style={{ padding: '16px', color: '#6366f1', fontWeight: 'bold' }}>{stat.name}</td>
+                <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{stat.average}%</td>
+                <td style={{ padding: '16px' }}><span style={{ padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold', backgroundColor: stat.average >= 70 ? 'rgba(82, 196, 26, 0.1)' : 'rgba(245, 34, 45, 0.1)', color: stat.average >= 70 ? '#52c41a' : '#f5222d' }}>{stat.average >= 70 ? 'On Track' : 'Needs Support'}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </PageWrapper>
+  );
+
+  const renderAssessments = () => (
+    <PageWrapper keyName="assessments">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
+        <div><h1 className="gradient-text" style={{ margin: 0 }}>Assignments Manager</h1><p style={{ margin: 0, color: 'var(--text-muted)' }}>Create new assignments for your classes.</p></div>
+        <button onClick={() => setIsAssessmentModalOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', backgroundColor: '#a855f7', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+          <Plus size={18} /> New Assignment
+        </button>
+      </div>
+      <div style={{ backgroundColor: 'var(--bg-card)', padding: '20px', borderRadius: '10px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid var(--border-light)' }}>
+              <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Title</th>
+              <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Subject</th>
+              <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Date</th>
+              <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Max Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {assessmentList.map(a => (
+              <tr key={a.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
+                <td style={{ padding: '16px', fontWeight: 'bold', color: 'var(--text-main)' }}>{a.title}</td>
+                <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.subject}</td>
+                <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.date}</td>
+                <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.maxScore} pts</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </PageWrapper>
+  );
+
+  const renderReports = () => (
+    <PageWrapper keyName="reports">
+      <div style={{ marginBottom: '30px' }}><h1 className="gradient-text" style={{ margin: 0 }}>Analytics & Reports</h1><p style={{ margin: 0, color: 'var(--text-muted)' }}>Generate data exports for administrative review.</p></div>
+      <div style={{ backgroundColor: 'var(--bg-card)', padding: '30px', borderRadius: '10px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center' }}>
+        <div style={{ marginBottom: '20px', color: '#6366f1' }}><FileText size={48} /></div>
+        <h2 style={{ margin: '0 0 10px 0', color: 'var(--text-main)' }}>Class Performance Export</h2>
+        <p style={{ color: 'var(--text-muted)', maxWidth: '400px', marginBottom: '20px' }}>Download a complete, unformatted CSV file containing all current student averages and tracking statuses.</p>
+        <button onClick={generateReport} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 24px', backgroundColor: '#52c41a', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}>
+          <Download size={18} /> Download CSV Report
+        </button>
+      </div>
+    </PageWrapper>
+  );
+
+  const renderSettings = () => (
+    <PageWrapper keyName="settings">
+      <div style={{ marginBottom: '30px' }}><h1 className="gradient-text" style={{ margin: 0 }}>Account Settings</h1><p style={{ margin: 0, color: 'var(--text-muted)' }}>Manage your profile and preferences.</p></div>
+      <div style={{ backgroundColor: 'var(--bg-card)', padding: '30px', borderRadius: '10px', boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)', maxWidth: '500px' }}>
+        <div style={{ marginBottom: '20px' }}><label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text-main)' }}>Full Name</label><input type="text" disabled value={teacher.name} style={{ width: '100%', padding: '10px', backgroundColor: 'var(--bg-main)', border: '1px solid var(--border)', color: 'var(--text-main)', borderRadius: '6px' }} /></div>
+        <div style={{ marginBottom: '20px' }}><label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: 'var(--text-main)' }}>Email Address</label><input type="email" disabled value={teacher.email} style={{ width: '100%', padding: '10px', backgroundColor: 'var(--bg-main)', border: '1px solid var(--border)', color: 'var(--text-main)', borderRadius: '6px' }} /></div>
+        <button onClick={() => toast('Settings updating feature coming soon!')} style={{ padding: '10px 20px', backgroundColor: 'transparent', color: '#6366f1', border: '1px solid #6366f1', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Change Password</button>
+      </div>
+    </PageWrapper>
+  );
+
+  return (
+    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, sans-serif', overflow: 'hidden' }}>
+      
+      <Sidebar role={teacher.role} onLogout={handleLogout} activeTab={activeTab} setActiveTab={setActiveTab} />
+
+      <div style={{ flex: 1, padding: '40px', overflowY: 'auto', height: '100vh', boxSizing: 'border-box' }}>
+        <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+          <AnimatePresence mode="wait">
+            {activeTab === 'dashboard' && renderDashboard()}
+            {activeTab === 'assessments' && renderAssessments()}
+            {activeTab === 'reports' && renderReports()}
+            {activeTab === 'settings' && renderSettings()}
+          </AnimatePresence>
+        </div>
+      </div>
+
+      {/* MODALS */}
+      <AnimatePresence>
+        {isAddStudentModalOpen && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+            <motion.div initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 50, opacity: 0 }} style={{ backgroundColor: 'var(--bg-card)', padding: '30px', borderRadius: '12px', width: '100%', maxWidth: '400px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h2 style={{ margin: 0, color: 'var(--text-main)' }}>Add New Student</h2>
+                <button type="button" onClick={() => setIsAddStudentModalOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={20} /></button>
+              </div>
+              <form onSubmit={handleAddStudent} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                <div><label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Student Name</label><input required type="text" placeholder="e.g., Sarah Jenkins" value={newStudent.name} onChange={e => setNewStudent({...newStudent, name: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)', boxSizing: 'border-box' }} /></div>
+                <div><label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Student Email</label><input required type="email" placeholder="sarah@school.edu" value={newStudent.email} onChange={e => setNewStudent({...newStudent, email: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)', boxSizing: 'border-box' }} /></div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}><button type="button" onClick={() => setIsAddStudentModalOpen(false)} style={{ padding: '10px 15px', backgroundColor: 'transparent', color: 'var(--text-main)', border: '1px solid var(--border)', borderRadius: '6px', cursor: 'pointer' }}>Cancel</button><button type="submit" style={{ padding: '10px 15px', backgroundColor: '#14b8a6', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Add Student</button></div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isGradeModalOpen && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+            <motion.div initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 50, opacity: 0 }} style={{ backgroundColor: 'var(--bg-card)', padding: '30px', borderRadius: '12px', width: '100%', maxWidth: '400px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h2 style={{ margin: 0, color: 'var(--text-main)' }}>Grade Student</h2>
+                <button type="button" onClick={() => setIsGradeModalOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={20} /></button>
+              </div>
+              <form onSubmit={handleAddGrade} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Select Assignment</label>
+                  <select required value={newGrade.assessmentId} onChange={e => setNewGrade({...newGrade, assessmentId: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)' }}>
+                    <option value="">Choose an assignment...</option>
+                    {assessmentList.map(a => <option key={a.id} value={a.id}>{a.title} ({a.maxScore} pts)</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Select Student</label>
+                  <select required value={newGrade.studentId} onChange={e => setNewGrade({...newGrade, studentId: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)' }}>
+                    <option value="">Choose a student...</option>
+                    {liveStudents.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+                <div><label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Score Achieved</label><input required type="number" value={newGrade.score} onChange={e => setNewGrade({...newGrade, score: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)', boxSizing: 'border-box' }} /></div>
+                <div><label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Educator Remarks</label><textarea required rows="3" placeholder="e.g., Great work on the logic section." value={newGrade.feedback} onChange={e => setNewGrade({...newGrade, feedback: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)', boxSizing: 'border-box', resize: 'vertical' }} /></div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}><button type="button" onClick={() => setIsGradeModalOpen(false)} style={{ padding: '10px 15px', backgroundColor: 'transparent', color: 'var(--text-main)', border: '1px solid var(--border)', borderRadius: '6px', cursor: 'pointer' }}>Cancel</button><button type="submit" style={{ padding: '10px 15px', backgroundColor: '#6366f1', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Save Grade</button></div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isAssessmentModalOpen && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+            <motion.div initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 50, opacity: 0 }} style={{ backgroundColor: 'var(--bg-card)', padding: '30px', borderRadius: '12px', width: '100%', maxWidth: '400px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                <h2 style={{ margin: 0, color: 'var(--text-main)' }}>Create Assignment</h2>
+                <button type="button" onClick={() => setIsAssessmentModalOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={20} /></button>
+              </div>
+              <form onSubmit={handleAddAssessment} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                <div><label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Assignment Title</label><input required type="text" placeholder="e.g., Final Project" value={newAssessment.title} onChange={e => setNewAssessment({...newAssessment, title: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)', boxSizing: 'border-box' }} /></div>
+                <div><label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Subject Domain</label><input required type="text" placeholder="e.g., Computer Science" value={newAssessment.subject} onChange={e => setNewAssessment({...newAssessment, subject: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)', boxSizing: 'border-box' }} /></div>
+                <div><label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold', color: 'var(--text-muted)' }}>Max Possible Score</label><input required type="number" min="1" value={newAssessment.maxScore} onChange={e => setNewAssessment({...newAssessment, maxScore: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', color: 'var(--text-main)', boxSizing: 'border-box' }} /></div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}><button type="button" onClick={() => setIsAssessmentModalOpen(false)} style={{ padding: '10px 15px', backgroundColor: 'transparent', color: 'var(--text-main)', border: '1px solid var(--border)', borderRadius: '6px', cursor: 'pointer' }}>Cancel</button><button type="submit" style={{ padding: '10px 15px', backgroundColor: '#a855f7', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Create</button></div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {selectedStudentId && selectedStudent && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+            <motion.div initial={{ y: 50, scale: 0.9, opacity: 0 }} animate={{ y: 0, scale: 1, opacity: 1 }} exit={{ y: 50, scale: 0.9, opacity: 0 }} style={{ backgroundColor: 'var(--bg-card)', padding: '30px', borderRadius: '12px', width: '100%', maxWidth: '700px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid var(--border-light)', paddingBottom: '15px', marginBottom: '20px' }}>
+                <div><h2 style={{ margin: '0 0 5px 0', color: 'var(--text-main)' }}>{selectedStudent.name}'s Profile</h2><span style={{ color: 'var(--text-muted)' }}>{selectedStudent.email}</span></div>
+                <button onClick={() => setSelectedStudentId(null)} style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '8px 12px', backgroundColor: 'transparent', color: 'var(--text-main)', border: '1px solid var(--border)', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}><X size={16} /> Close</button>
+              </div>
+              <h3 style={{ marginTop: 0, color: 'var(--text-main)' }}>Progress Timeline</h3>
+              <div style={{ width: '100%', height: 250, backgroundColor: 'var(--bg-main)', borderRadius: '8px', padding: '10px', marginBottom: '20px' }}>
+                <ResponsiveContainer>
+                  <AreaChart data={selectedStudentGrades}>
+                    <defs>
+                      <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#6366f1" stopOpacity={0.4}/><stop offset="95%" stopColor="#6366f1" stopOpacity={0}/></linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                    <XAxis dataKey="testName" tick={{ fill: 'var(--text-muted)', fontSize: 12 }} />
+                    <YAxis domain={[0, 100]} tick={{ fill: 'var(--text-muted)' }} />
+                    <Tooltip contentStyle={{ backgroundColor: 'var(--bg-card)', color: 'var(--text-main)', borderRadius: '8px', border: '1px solid var(--border)' }} />
+                    <Area type="monotone" dataKey="percentage" stroke="#6366f1" strokeWidth={3} fillOpacity={1} fill="url(#colorScore)" activeDot={{ r: 8 }} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+              <h3 style={{ marginTop: 0, color: 'var(--text-main)' }}>Assessment History</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {selectedStudentGrades.map((grade, index) => (
+                  <div key={index} style={{ border: '1px solid var(--border)', backgroundColor: 'var(--bg-main)', padding: '12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div><h4 style={{ margin: '0 0 4px 0', color: 'var(--text-main)' }}>{grade.testName}</h4><span style={{ fontSize: '13px', color: 'var(--text-muted)', fontStyle: 'italic' }}>"{grade.feedback}"</span></div>
+                    <strong style={{ color: grade.percentage >= 70 ? '#52c41a' : '#f5222d', fontSize: '18px' }}>{grade.score} / {grade.maxScore}</strong>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isLobbyOpen && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+            <motion.div initial={{ y: 50, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 50, opacity: 0 }} style={{ backgroundColor: 'var(--bg-card)', padding: '30px', borderRadius: '12px', width: '100%', maxWidth: '500px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid var(--border)', paddingBottom: '10px' }}>
+                <h2 style={{ margin: 0, color: 'var(--text-main)' }}>Waiting Room</h2>
+                <button onClick={() => setIsLobbyOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}><X size={20} /></button>
+              </div>
+              {pendingRequests.length === 0 ? (
+                <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '20px' }}>No pending join requests.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {pendingRequests.map(req => (
+                    <div key={req.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px', backgroundColor: 'var(--bg-main)', border: '1px solid var(--border)', borderRadius: '8px' }}>
+                      <div>
+                        <h4 style={{ margin: '0 0 5px 0', color: 'var(--text-main)' }}>{req.studentName}</h4>
+                        <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>{req.studentEmail}</span>
+                      </div>
+                      <button onClick={() => handleApproveRequest(req.id)} style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '8px 16px', backgroundColor: '#52c41a', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+                        <Check size={16} /> Approve
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+    </div>
+  );
+}
+
+export default TeacherDashboard;
