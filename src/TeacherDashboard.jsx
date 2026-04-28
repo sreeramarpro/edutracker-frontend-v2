@@ -18,8 +18,11 @@ function TeacherDashboard() {
   const [isAddStudentModalOpen, setIsAddStudentModalOpen] = useState(false);
   const [isLobbyOpen, setIsLobbyOpen] = useState(false);
   
-  // Start empty, we will fill it from MySQL!
   const [assessmentList, setAssessmentList] = useState([]);
+
+  // ✅ FIX: results and users are now proper state instead of removed mock data variables
+  const [results, setResults] = useState([]);
+  const [users, setUsers] = useState([]);
 
   // Fetch the live assessments from Spring Boot
   const fetchAssessments = async () => {
@@ -44,7 +47,6 @@ function TeacherDashboard() {
   
   const navigate = useNavigate();
 
-  // --- 🪄 UPGRADED API CALLS ---
   const fetchLiveStudents = async (tId) => {
     const idToUse = tId || teacher?.id;
     if (!idToUse) return;
@@ -53,9 +55,8 @@ function TeacherDashboard() {
       const response = await fetch(`http://localhost:8081/api/requests/approved/${idToUse}`);
       const data = await response.json();
       
-      // Map the relational data into a flat format for our charts to read
       const roster = data.map(req => ({
-        id: req.studentId || req.id, // Fallback for seeded students without real accounts
+        id: req.studentId || req.id,
         name: req.studentName,
         email: req.studentEmail,
         role: 'student'
@@ -83,7 +84,7 @@ function TeacherDashboard() {
       if (response.ok) {
         toast.success('Student approved!');
         fetchPendingRequests(teacher.id);
-        fetchLiveStudents(teacher.id); // Instantly updates the roster!
+        fetchLiveStudents(teacher.id);
       }
     } catch (error) {
       toast.error('Approval failed.');
@@ -91,6 +92,7 @@ function TeacherDashboard() {
   };
 
   const seedDatabase = async () => {
+    // ✅ FIX: uses users state instead of removed mock data variable
     const studentsOnly = users.filter(u => u.role === 'student');
     let addedCount = 0;
     for (const student of studentsOnly) {
@@ -103,7 +105,7 @@ function TeacherDashboard() {
             studentName: student.name, 
             studentEmail: student.email, 
             teacherId: teacher.id,
-            studentId: Math.floor(Math.random() * 10000) // Fake ID for mock data
+            studentId: Math.floor(Math.random() * 10000)
           })
         });
         addedCount++;
@@ -131,7 +133,7 @@ function TeacherDashboard() {
           studentName: newStudent.name, 
           studentEmail: newStudent.email, 
           teacherId: teacher.id,
-          studentId: Math.floor(Math.random() * 10000) // Fake ID since they didn't sign up
+          studentId: Math.floor(Math.random() * 10000)
         })
       });
       if (response.ok) {
@@ -148,13 +150,14 @@ function TeacherDashboard() {
   };
 
   // --- STATS & LIFECYCLES ---
-  const calculateStats = () => {
+  const calculateStats = (currentResults = results) => {
     const allStudents = liveStudents;
     let totalClassPercentage = 0;
     let riskCount = 0;
     
     const stats = allStudents.map(student => {
-      const studentGrades = results.filter(r => r.studentId === student.id);
+      // ✅ FIX: uses currentResults parameter so it works with latest state
+      const studentGrades = currentResults.filter(r => r.studentId === student.id);
       let totalPercentage = 0;
       studentGrades.forEach(grade => {
         const testInfo = assessmentList.find(a => a.id === grade.assessmentId);
@@ -180,22 +183,21 @@ function TeacherDashboard() {
     if (parsedUser.role !== 'teacher') { navigate('/student'); return; }
     setTeacher(parsedUser);
     
-    // 🪄 We pass the ID explicitly on first load!
     fetchLiveStudents(parsedUser.id);
     fetchPendingRequests(parsedUser.id);
     fetchAssessments();
   }, [navigate]); 
 
+  // ✅ FIX: results added to dependency array so stats recalculate when grades are added
   useEffect(() => {
     if (liveStudents.length > 0) {
       calculateStats();
     } else {
-      // If the roster gets emptied out, clear the stats to avoid old data lingering
       setStudentStats([]);
       setClassAverage(0);
       setAtRiskCount(0);
     }
-  }, [liveStudents, assessmentList]);
+  }, [liveStudents, assessmentList, results]);
 
   const handleLogout = () => { 
     localStorage.removeItem('currentUser'); 
@@ -222,9 +224,7 @@ function TeacherDashboard() {
       if (response.ok) {
         toast.success('New assignment created!');
         setIsAssessmentModalOpen(false);
-        // Clear the form
         setNewAssessment({ title: '', subject: '', maxScore: '100', date: new Date().toISOString().split('T')[0] });
-        // Instantly refresh the table!
         fetchAssessments(); 
       } else {
         toast.error('Failed to create assignment.');
@@ -234,7 +234,6 @@ function TeacherDashboard() {
     }
   };
 
-  // --- 🗑️ NEW DELETE FUNCTION ---
   const handleDeleteAssessment = async (id) => {
     if (!window.confirm("Are you sure you want to delete this assignment?")) return;
 
@@ -245,7 +244,7 @@ function TeacherDashboard() {
 
       if (response.ok) {
         toast.success('Assignment deleted!');
-        fetchAssessments(); // Instantly remove it from the screen
+        fetchAssessments();
       } else {
         toast.error('Failed to delete assignment.');
       }
@@ -256,8 +255,16 @@ function TeacherDashboard() {
 
   const handleAddGrade = (e) => {
     e.preventDefault();
-    results.push({ id: Math.floor(Math.random() * 10000), studentId: Number(newGrade.studentId), assessmentId: Number(newGrade.assessmentId), score: Number(newGrade.score), feedback: newGrade.feedback || "Reviewed offline." });
-    calculateStats();
+    const newResult = {
+      id: Math.floor(Math.random() * 10000),
+      studentId: Number(newGrade.studentId),
+      assessmentId: Number(newGrade.assessmentId),
+      score: Number(newGrade.score),
+      feedback: newGrade.feedback || "Reviewed offline."
+    };
+    // ✅ FIX: use setResults instead of results.push() — React state is immutable
+    // The useEffect watching [results] will automatically trigger calculateStats()
+    setResults(prev => [...prev, newResult]);
     setIsGradeModalOpen(false);
     setNewGrade({ studentId: '', assessmentId: '', score: '', feedback: '' });
     toast.success('Grade & remark saved successfully!'); 
@@ -290,6 +297,7 @@ function TeacherDashboard() {
   let selectedStudentGrades = [];
   if (selectedStudentId) {
     selectedStudent = liveStudents.find(u => u.id === selectedStudentId);
+    // ✅ FIX: uses results state instead of removed mock data variable
     selectedStudentGrades = results.filter(r => r.studentId === selectedStudentId).map(result => {
       const testInfo = assessmentList.find(a => a.id === result.assessmentId);
       return { 
@@ -407,7 +415,6 @@ function TeacherDashboard() {
               <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Subject</th>
               <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Date</th>
               <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Max Score</th>
-              {/* 🪄 ADDED ACTION HEADER */}
               <th style={{ padding: '16px', textAlign: 'right', color: 'var(--text-muted)' }}>Action</th>
             </tr>
           </thead>
@@ -418,7 +425,6 @@ function TeacherDashboard() {
                 <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.subject}</td>
                 <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.date}</td>
                 <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.maxScore} pts</td>
-                {/* 🪄 ADDED DELETE BUTTON */}
                 <td style={{ padding: '16px', textAlign: 'right' }}>
                   <button 
                     onClick={() => handleDeleteAssessment(a.id)}

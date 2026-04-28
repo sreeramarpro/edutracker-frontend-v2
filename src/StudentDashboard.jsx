@@ -13,58 +13,99 @@ function StudentDashboard() {
   const [radarData, setRadarData] = useState([]);
   const [weakestSubject, setWeakestSubject] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
-  
+
+  // ✅ FIX: assessments fetched from API instead of removed mock variable
+  const [assessments, setAssessments] = useState([]);
+
   const navigate = useNavigate();
+
+  // ✅ FIX: fetch assessments from the same backend endpoint the teacher uses
+  const fetchAssessments = async () => {
+    try {
+      const response = await fetch('https://edutracker-backend-production-b75b.up.railway.app/api/assessments');
+      const data = await response.json();
+      setAssessments(data);
+    } catch (error) {
+      console.error("Could not fetch assessments:", error);
+    }
+  };
+
+  // ✅ FIX: fetch this student's grades from the backend instead of removed mock results variable
+  const fetchMyGrades = async (studentId, assessmentList) => {
+    try {
+      const response = await fetch(`http://localhost:8081/api/grades/student/${studentId}`);
+      const data = await response.json();
+
+      const grades = data.map(result => {
+        const testInfo = assessmentList.find(a => a.id === result.assessmentId);
+        return {
+          testName: testInfo ? testInfo.title : 'Unknown',
+          subject: testInfo ? testInfo.subject : 'Misc',
+          percentage: testInfo ? Math.round((result.score / testInfo.maxScore) * 100) : 0,
+          score: result.score,
+          maxScore: testInfo ? testInfo.maxScore : 100,
+          feedback: result.feedback,
+          date: testInfo ? testInfo.date : 'N/A'
+        };
+      });
+
+      setMyGrades(grades);
+      calculateDerivedStats(grades);
+    } catch (error) {
+      console.error("Could not fetch grades:", error);
+    }
+  };
+
+  const calculateDerivedStats = (grades) => {
+    if (grades.length === 0) return;
+
+    const total = grades.reduce((sum, g) => sum + g.percentage, 0);
+    setOverallAvg((total / grades.length).toFixed(1));
+
+    const subjectMap = {};
+    grades.forEach(g => {
+      if (!subjectMap[g.subject]) subjectMap[g.subject] = { total: 0, count: 0 };
+      subjectMap[g.subject].total += g.percentage;
+      subjectMap[g.subject].count += 1;
+    });
+
+    const processedRadar = Object.keys(subjectMap).map(sub => ({
+      subject: sub,
+      score: Math.round(subjectMap[sub].total / subjectMap[sub].count)
+    }));
+
+    setRadarData(processedRadar);
+
+    if (processedRadar.length > 0) {
+      const sortedSubjects = [...processedRadar].sort((a, b) => a.score - b.score);
+      if (sortedSubjects[0].score < 70) {
+        setWeakestSubject(sortedSubjects[0].subject);
+      }
+    }
+  };
 
   useEffect(() => {
     const storedUser = localStorage.getItem('currentUser');
     if (!storedUser) { navigate('/'); return; }
-    
+
     const parsedUser = JSON.parse(storedUser);
     if (parsedUser.role !== 'student') { navigate('/teacher'); return; }
-    
+
     setStudent(parsedUser);
 
-    const grades = results.filter(r => r.studentId === parsedUser.id).map(result => {
-      const testInfo = assessments.find(a => a.id === result.assessmentId);
-      return { 
-        testName: testInfo ? testInfo.title : 'Unknown', 
-        subject: testInfo ? testInfo.subject : 'Misc',
-        percentage: testInfo ? Math.round((result.score / testInfo.maxScore) * 100) : 0, 
-        score: result.score, 
-        maxScore: testInfo ? testInfo.maxScore : 100, 
-        feedback: result.feedback,
-        date: testInfo ? testInfo.date : 'N/A'
-      };
-    });
-
-    setMyGrades(grades);
-
-    if (grades.length > 0) {
-      const total = grades.reduce((sum, g) => sum + g.percentage, 0);
-      setOverallAvg((total / grades.length).toFixed(1));
-
-      const subjectMap = {};
-      grades.forEach(g => {
-        if (!subjectMap[g.subject]) subjectMap[g.subject] = { total: 0, count: 0 };
-        subjectMap[g.subject].total += g.percentage;
-        subjectMap[g.subject].count += 1;
-      });
-
-      const processedRadar = Object.keys(subjectMap).map(sub => ({
-        subject: sub,
-        score: Math.round(subjectMap[sub].total / subjectMap[sub].count)
-      }));
-
-      setRadarData(processedRadar);
-
-      if (processedRadar.length > 0) {
-        const sortedSubjects = [...processedRadar].sort((a, b) => a.score - b.score);
-        if (sortedSubjects[0].score < 70) {
-          setWeakestSubject(sortedSubjects[0].subject);
-        }
+    // ✅ FIX: chain the fetches so grades can be enriched with assessment info
+    const loadData = async () => {
+      try {
+        const response = await fetch('https://edutracker-backend-production-b75b.up.railway.app/api/assessments');
+        const assessmentList = await response.json();
+        setAssessments(assessmentList);
+        await fetchMyGrades(parsedUser.id, assessmentList);
+      } catch (error) {
+        console.error("Failed to load student data:", error);
       }
-    }
+    };
+
+    loadData();
   }, [navigate]);
 
   const handleLogout = () => { 
