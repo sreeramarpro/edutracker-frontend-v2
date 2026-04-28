@@ -55,7 +55,7 @@ function AuthPage() {
           // --- THE JOIN REQUEST MAGIC ---
           if (formData.role === 'student') {
             // If they signed up as a student, instantly fire off a join request!
-            await fetch('http://localhost:8081/api/requests/create', {
+            await fetch('https://edutracker-backend-production-b75b.up.railway.app/api/requests/create', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({

@@ -25,7 +25,7 @@ function TeacherDashboard() {
   // Fetch the live assessments from Spring Boot
   const fetchAssessments = async () => {
     try {
-      const response = await fetch('http://localhost:8081/api/assessments');
+      const response = await fetch('https://edutracker-backend-production-b75b.up.railway.app/api/assessments');
       const data = await response.json();
       setAssessmentList(data);
     } catch (error) {
@@ -235,6 +235,26 @@ function TeacherDashboard() {
     }
   };
 
+  // --- 🗑️ NEW DELETE FUNCTION ---
+  const handleDeleteAssessment = async (id) => {
+    if (!window.confirm("Are you sure you want to delete this assignment?")) return;
+
+    try {
+      const response = await fetch(`http://localhost:8081/api/assessments/${id}`, {
+        method: 'DELETE'
+      });
+
+      if (response.ok) {
+        toast.success('Assignment deleted!');
+        fetchAssessments(); // Instantly remove it from the screen
+      } else {
+        toast.error('Failed to delete assignment.');
+      }
+    } catch (error) {
+      toast.error('Cannot connect to server.');
+    }
+  };
+
   const handleAddGrade = (e) => {
     e.preventDefault();
     results.push({ id: Math.floor(Math.random() * 10000), studentId: Number(newGrade.studentId), assessmentId: Number(newGrade.assessmentId), score: Number(newGrade.score), feedback: newGrade.feedback || "Reviewed offline." });
@@ -388,6 +408,8 @@ function TeacherDashboard() {
               <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Subject</th>
               <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Date</th>
               <th style={{ padding: '16px', textAlign: 'left', color: 'var(--text-muted)' }}>Max Score</th>
+              {/* 🪄 ADDED ACTION HEADER */}
+              <th style={{ padding: '16px', textAlign: 'right', color: 'var(--text-muted)' }}>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -397,6 +419,15 @@ function TeacherDashboard() {
                 <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.subject}</td>
                 <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.date}</td>
                 <td style={{ padding: '16px', color: 'var(--text-muted)' }}>{a.maxScore} pts</td>
+                {/* 🪄 ADDED DELETE BUTTON */}
+                <td style={{ padding: '16px', textAlign: 'right' }}>
+                  <button 
+                    onClick={() => handleDeleteAssessment(a.id)}
+                    style={{ padding: '6px 14px', backgroundColor: '#f5222d', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}
+                  >
+                    Delete
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
